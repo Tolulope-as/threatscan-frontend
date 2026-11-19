@@ -6,49 +6,6 @@ import { auth, saveScanResult } from "../lib/firebase";
 
 // const BACKEND_URL = "http://127.0.0.1:5000";
 
-const API_URL = import.meta.env.VITE_API_URL;
-const POLL_INTERVAL_MS = 3000;          // ask the backend for progress every 3 seconds
-const MAX_WAIT_MS = 6 * 60 * 1000;      // give up after 6 minutes
-
-// An error whose message is safe to show directly to the user
-class ScanError extends Error {}
-
-// Poll the backend until the background scan finishes
-async function pollScan(scanId: string) {
-  const started = Date.now();
-  let failures = 0;
-
-  while (Date.now() - started < MAX_WAIT_MS) {
-    await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
-
-    let res: Response;
-    try {
-      res = await fetch(`${API_URL}/scan/status/${scanId}`);
-    } catch {
-      // tolerate brief network blips; give up after 5 failures in a row
-      failures += 1;
-      if (failures >= 5) {
-        throw new ScanError("Lost connection to the scanner. Please try again.");
-      }
-      continue;
-    }
-    failures = 0;
-
-    if (res.status === 404) {
-      throw new ScanError("Scan expired or the server restarted. Please try again.");
-    }
-
-    const data = await res.json();
-    if (data.status === "done") return data.result;
-    if (data.status === "error") {
-      throw new ScanError(data.error || "Scan failed. Please try again.");
-    }
-    // status === "processing" -> keep waiting
-  }
-
-  throw new ScanError("The scan is taking too long. Please try again.");
-}
-
 export const Route = createFileRoute("/")({
   head: () => ({
     meta: [
@@ -93,33 +50,30 @@ function Index() {
     setLoading(true);
 
     try {
-      // Step 1: start the scan. The backend replies immediately with a scan_id.
-      let start;
+      let result;
 
       if (tab === "url") {
-        const response = await fetch(`${API_URL}/scan/url`, {
+        const response = await fetch(`${import.meta.env.VITE_API_URL}/scan/url`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ url: url.trim() }),
         });
-        start = await response.json();
+        result = await response.json();
       } else {
         const formData = new FormData();
         formData.append("file", file!);
-        const response = await fetch(`${API_URL}/scan/file`, {
+        const response = await fetch(`${import.meta.env.VITE_API_URL}/scan/file`, {
           method: "POST",
           body: formData,
         });
-        start = await response.json();
+        result = await response.json();
       }
 
-      if (start.error) {
-        setError(start.error);
-        return; // the finally block turns the loading state off
+      if (result.error) {
+        setError(result.error);
+        setLoading(false);
+        return;
       }
-
-      // Step 2: wait for the background scan to finish and get the report.
-      const result = await pollScan(start.scan_id);
 
       // Save to Firestore if user is logged in
       const user = auth.currentUser;
@@ -144,11 +98,7 @@ function Index() {
       });
 
     } catch (err) {
-      setError(
-        err instanceof ScanError
-          ? err.message
-          : "Failed to connect to scanner. Make sure the backend is running."
-      );
+      setError("Failed to connect to scanner. Make sure the backend is running.");
     } finally {
       setLoading(false);
     }
@@ -212,11 +162,6 @@ function Index() {
                   className="w-full rounded-md border border-[#30363d] bg-[#0d1117] px-4 py-3 text-foreground placeholder:text-[#6e7681] focus:border-[#58a6ff] focus:outline-none focus:ring-1 focus:ring-[#58a6ff]"
                 />
                 {error && <p className="text-sm text-[#f85149]">{error}</p>}
-                {loading && (
-                  <p className="text-sm" style={{ color: "#8b949e" }}>
-                    Analysing with multiple security engines. This can take up to a minute, please keep this page open.
-                  </p>
-                )}
                 <button
                   onClick={handleScan}
                   disabled={loading}
@@ -254,11 +199,6 @@ function Index() {
                 </div>
                 
                 {error && <p className="text-sm text-[#f85149]">{error}</p>}
-                {loading && (
-                  <p className="text-sm" style={{ color: "#8b949e" }}>
-                    Analysing with multiple security engines. This can take up to a minute, please keep this page open.
-                  </p>
-                )}
                 <button
                   onClick={handleScan}
                   disabled={loading}
